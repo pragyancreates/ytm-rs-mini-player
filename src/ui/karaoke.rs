@@ -1065,6 +1065,8 @@ struct ScrollAnim {
     start: f64,
     delta: f32,
     active: usize,
+    /// A quick nudge to keep the sung row centred, rather than a line change's roll.
+    fast: bool,
 }
 
 /// A line shifted by a relayout (a translation or romanization arriving).
@@ -1223,11 +1225,14 @@ pub struct Own {
     pub padding: Option<f32>,
     /// A fixed ink for a compact view, over the theme's sung and unsung colours.
     pub ink: Option<Color32>,
+    /// Keep the row containing the latest sung word at the anchor, scrolling the line
+    /// through a one-line window as it is sung (the pill's compact karaoke).
+    pub follow: bool,
 }
 
 impl Default for Own {
     fn default() -> Self {
-        Self { scale: 1.0, weight: None, deco_scale: 1.0, size: None, anchor: None, padding: None, ink: None }
+        Self { scale: 1.0, weight: None, deco_scale: 1.0, size: None, anchor: None, padding: None, ink: None, follow: false }
     }
 }
 
@@ -1397,13 +1402,12 @@ impl View {
             self.credits_focused = credits_focused;
             new_lyric = true;
         }
-        // A line taller than the view would run off the bottom while it's sung: how far
-        // down it the singing is (the latest word's row, or for a line-synced line, as far
-        // as its time has gone), so the view pages down with it.
+        // How far down its line the singing is: the latest sung word's row, or for a
+        // line-synced line, as far as its time has gone.
         let line_h = cfg.line_h();
-        let sung_y = |i: usize| -> Option<f32> {
+        let row_y = |i: usize| -> Option<f32> {
             let b = &layout.blocks[i];
-            if b.height <= view_h || scroll_time < b.start {
+            if scroll_time < b.start {
                 return None;
             }
             let mut timed = b.words.iter().filter(|w| !w.line_synced && !w.bg).peekable();
@@ -1413,7 +1417,21 @@ impl View {
                 timed.filter(|w| w.start <= scroll_time).map(|w| w.pos.y).fold(0.0, f32::max)
             })
         };
-        let page = active.last().and_then(|&i| sung_y(i).map(|y| (i, (y / line_h) as i32)));
+        // A line taller than the view pages down with the singing.
+        let sung_y = |i: usize| -> Option<f32> {
+            let b = &layout.blocks[i];
+            if b.height <= view_h { None } else { row_y(i) }
+        };
+        // The pill follows the sung row so the active part stays in the middle of its
+        // one-line window; the bigger views keep the whole line centred.
+        let follow_line = if f.own.follow { active.iter().copied().rev().find(|&i| layout.blocks[i].start <= scroll_time) } else { None };
+        let page = if let Some(i) = follow_line {
+            row_y(i).map(|y| (i, (y / line_h) as i32))
+        } else {
+            active.last().and_then(|&i| sung_y(i).map(|y| (i, (y / line_h) as i32)))
+        };
+        // A step to the next row of the same line is a quick nudge; a new line is a roll.
+        let follow_step = f.own.follow && page != self.page && matches!((self.page, page), (Some((a, _)), Some((b, _))) if a == b);
         if page != self.page {
             self.page = page;
             new_lyric |= page.is_some();
@@ -1462,7 +1480,10 @@ impl View {
             if credits_focused && let (Some(c), Some(ls)) = (credits, last_sung) {
                 top = (pos(c) + h(c) / 2.0 - offset).min(pos(ls));
             }
-            let top = if f.soft || f.own.anchor.is_some() {
+            let top = if let Some(i) = follow_line {
+                // The pill: keep the row being sung in the middle as the line rolls on.
+                row_y(i).map_or(centre - offset, |y| pos(i) + y + line_h * 0.5 - offset)
+            } else if f.soft || f.own.anchor.is_some() {
                 // The mini card and the pill: centre the line being sung even when it is
                 // the first or last one, where the normal view stops at the lyrics' edge.
                 centre - offset
@@ -1473,7 +1494,7 @@ impl View {
                 self.scroll_top = top;
                 self.scroll_set = true;
             } else if (top - self.scroll_top).abs() > 2.0 {
-                self.scrolls.push(ScrollAnim { start: f.now, delta: top - self.scroll_top, active: last });
+                self.scrolls.push(ScrollAnim { start: f.now, delta: top - self.scroll_top, active: last, fast: follow_step });
                 self.scroll_top = top;
             }
             self.last_scroll = active.clone();
@@ -1543,10 +1564,15 @@ impl View {
             let mut dy = 0.0;
             for a in &self.scrolls {
                 let rel = i as isize - a.active as isize;
-                let d = match cfg.scroll_curve {
-                    _ if f.quick_scroll => scroll_duration(rel, a.delta),
-                    Some(curve) => curve_duration(rel, a.delta, curve),
-                    None => scroll_duration(rel, a.delta) + cfg.scroll_secs - 0.75,
+                let d = if a.fast {
+                    // The pill's next sung row snaps into the middle quickly.
+                    0.16
+                } else {
+                    match cfg.scroll_curve {
+                        _ if f.quick_scroll => scroll_duration(rel, a.delta),
+                        Some(curve) => curve_duration(rel, a.delta, curve),
+                        None => scroll_duration(rel, a.delta) + cfg.scroll_secs - 0.75,
+                    }
                 };
                 let p = ((f.now - a.start) / d.max(0.01)).clamp(0.0, 1.0) as f32;
                 dy += a.delta * (1.0 - scroll_ease.at(p));

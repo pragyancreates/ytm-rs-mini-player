@@ -1566,6 +1566,7 @@ fn pill_lyrics(app: &mut App, ui: &mut Ui, area: Rect, clip: Rect, now: f64) -> 
             padding: Some(0.0),
             // Light mode gets black ink instead of a dark backdrop behind Lucid's white.
             ink: theme::light().then_some(Color32::BLACK),
+            follow: true,
         },
         fullscreen: false,
         glass_chip: None,
@@ -1658,6 +1659,7 @@ fn card_lyrics(app: &mut App, ui: &mut Ui, area: Rect, open: f32, now: f64) {
             padding: None,
             // The card goes light in light mode: its lyrics go black to stay readable.
             ink: theme::light().then_some(Color32::BLACK),
+            follow: false,
         },
         fullscreen: false,
         glass_chip: app.look().app.glass.instrumental,
