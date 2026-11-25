@@ -469,6 +469,8 @@ pub struct Mini {
     lyrics: bool,
     /// In lyrics mode, the card's top bar and player controls hide until it's pointed at.
     pub lyrics_autohide: bool,
+    /// The card shows the song's cover art, dimmed, as its background.
+    pub cover_bg: bool,
     /// The card's lyrics view, kept apart from Now playing's.
     lyric_view: super::karaoke::View,
     /// The frame key that view was laid out for, so another song starts afresh.
@@ -531,6 +533,7 @@ impl Mini {
             pinned: get("mini_pinned").map_or(PINNED_BY_DEFAULT, |v| v == "1"),
             lyrics: get("mini_lyrics").is_some_and(|v| v == "1"),
             lyrics_autohide: get("mini_lyrics_autohide").is_some_and(|v| v == "1"),
+            cover_bg: get("mini_cover_bg").is_some_and(|v| v == "1"),
             lyric_view: Default::default(),
             lyric_key: 0,
             lyric_lines: None,
@@ -689,6 +692,7 @@ impl Mini {
         storage.set_string("mini_pinned", if self.pinned { "1" } else { "0" }.into());
         storage.set_string("mini_lyrics", if self.lyrics { "1" } else { "0" }.into());
         storage.set_string("mini_lyrics_autohide", if self.lyrics_autohide { "1" } else { "0" }.into());
+        storage.set_string("mini_cover_bg", if self.cover_bg { "1" } else { "0" }.into());
         let strip_key = if pill_active() { "mini_pill_window" } else { "mini_window" };
         for (key, place) in [(strip_key, &self.place), (VIDEO_KEY, &self.video_place)] {
             if let Some(p) = place {
@@ -1251,6 +1255,20 @@ pub fn pill(app: &mut App, ui: &mut Ui, now: f64) {
         app.actions.push(Action::Mini(false));
     }
     ui.painter().rect_filled(rect, radius, super::shell::base_color(app));
+    // The cover, full-bleed under everything the card draws: cropped to fill, dimmed the
+    // theme's way so the normal lyrics and controls keep their colours over it.
+    if app.mini.cover_bg
+        && grow > 0.5
+        && let Some(t) = app.current()
+    {
+        let fade = ((grow - 0.5) * 2.0).clamp(0.0, 1.0);
+        let tint = if theme::light() { Color32::from_gray(224) } else { Color32::from_gray(140) };
+        let mut art = ui.new_child(egui::UiBuilder::new().max_rect(card));
+        art.set_clip_rect(rect.intersect(ui.clip_rect()));
+        widgets::paint_cover_fill(&art, card, &t.thumbs, tint.gamma_multiply(fade));
+        let scrim = if theme::light() { theme::with_alpha(Color32::WHITE, 0.5 * fade) } else { theme::shade(0.3 * fade) };
+        ui.painter().rect_filled(rect, radius, scrim);
+    }
     ui.painter().rect_stroke(rect, radius, egui::Stroke::new(1.0, theme::glass(0.18)), egui::StrokeKind::Inside);
 
     // One fades out before the other fades in, inside the shape as it grows.
@@ -1369,9 +1387,9 @@ fn pill_row(app: &mut App, ui: &mut Ui, rect: Rect, reveal: f32, toast: Option<S
     }
 }
 
-/// The card's lyrics: only the line being sung, drawn by the same renderer Now playing
-/// uses so its word-by-word sweep is kept.
-fn card_lyrics(app: &mut App, ui: &mut Ui, area: Rect, now: f64) {
+/// The card's lyrics: the line being sung (and, with the chrome hidden, the lines around
+/// it), drawn by the same renderer Now playing uses so its word-by-word sweep is kept.
+fn card_lyrics(app: &mut App, ui: &mut Ui, area: Rect, open: f32, now: f64) {
     let message = |ui: &Ui, msg: &str| {
         let g = widgets::galley(ui, msg, theme::regular(13.0), theme::text_dim(), area.width() - 24.0);
         ui.painter().galley(area.center() - g.size() / 2.0, g, theme::text_dim());
@@ -1411,10 +1429,13 @@ fn card_lyrics(app: &mut App, ui: &mut Ui, area: Rect, now: f64) {
     let pos = app.lyric_clock.tick(pos, playing, now, app.audio.status.speed() as f64);
     let t = pos - app.lyric_prefs.offset(id, lyrics.provider, lyrics.sync == crate::lyrics::Sync::Word);
     // The whole lyrics are fed to the renderer, so its normal scroll runs between lines.
-    // Only a band as tall as the line being sung is left visible: the next line rolls
-    // through during the transition, but at rest only the active line is in the card.
+    // With the chrome showing, the band is only the line being sung: the next line rolls
+    // through during the transition, but at rest only the active line is in the card. With
+    // the chrome hidden, the band opens to the whole card and the neighbours show, fading
+    // toward its edges like the normal player.
     let target_h = if app.mini.lyric_h > 0.0 { (app.mini.lyric_h + 12.0).min(area.height()) } else { 96.0_f32.min(area.height()) };
-    let band_h = ui.ctx().animate_value_with_time(egui::Id::unique(("mini-lyric-band", key)), target_h, 0.2);
+    let one_h = ui.ctx().animate_value_with_time(egui::Id::unique(("mini-lyric-band", key)), target_h, 0.2);
+    let band_h = egui::lerp(one_h..=area.height(), open.clamp(0.0, 1.0));
     let band = Rect::from_center_size(area.center(), vec2(area.width(), band_h));
     let mut line_ui = ui.new_child(egui::UiBuilder::new().max_rect(area));
     line_ui.set_clip_rect(band.intersect(area));
@@ -1483,6 +1504,9 @@ fn card_body(app: &mut App, ui: &mut Ui, cr: Rect, now: f64) {
     // One value drives both bars and the lyric area, so they leave and the line recentres
     // as a single motion. Not auto-hiding, it's held fully out.
     let chrome = theme::anim_bool(&ctx, "mini-chrome", target, if wants_autohide { 0.32 } else { 0.0 }).clamp(0.0, 1.0);
+    // With the chrome out of the way, the lyrics open from the active line to the whole
+    // card; hovering closes them again as the bars come back.
+    let open = if wants_autohide { 1.0 - chrome } else { 0.0 };
     if autohide && !hovered && lingering {
         ctx.request_repaint_after(Duration::from_secs_f64(0.35 - (now - app.mini.chrome_at)));
     }
@@ -1568,7 +1592,7 @@ fn card_body(app: &mut App, ui: &mut Ui, cr: Rect, now: f64) {
         let area_top = egui::lerp(top + HEADER_H..=top + 12.0, 1.0 - chrome);
         let area_bottom = egui::lerp(bar.top() - 8.0..=cr.bottom() - 12.0, 1.0 - chrome);
         let area = Rect::from_min_max(pos2(l, area_top), pos2(cr.right() - 38.0, area_bottom));
-        card_lyrics(app, ui, area, now);
+        card_lyrics(app, ui, area, open, now);
         // The same capsule as the collapsed pill, sliding out the bottom of the card.
         if chrome > 0.001 {
             let bar = bar.translate(vec2(0.0, (1.0 - chrome) * (bar.height() + 16.0)));
@@ -2046,10 +2070,10 @@ mod tests {
         assert_eq!(m.pinned, PINNED_BY_DEFAULT);
         let m = Mini::load(|k| (k == "mini_pinned").then(|| "0".to_owned()));
         assert!(!m.pinned && m.place.is_none() && !m.active());
-        // The lyrics' auto-hide is off unless asked for.
+        // The lyrics' auto-hide and cover background are off unless asked for.
         let m = Mini::load(|_| None);
-        assert!(!m.lyrics_autohide);
-        let m = Mini::load(|k| (k == "mini_lyrics_autohide").then(|| "1".to_owned()));
-        assert!(m.lyrics_autohide);
+        assert!(!m.lyrics_autohide && !m.cover_bg);
+        let m = Mini::load(|k| (k == "mini_lyrics_autohide" || k == "mini_cover_bg").then(|| "1".to_owned()));
+        assert!(m.lyrics_autohide && m.cover_bg);
     }
 }

@@ -2855,6 +2855,10 @@ fn settings_mini(app: &mut App, ui: &mut Ui) {
             setting_row(ui, tr!("settings-mini-autohide"), Some(tr!("settings-mini-autohide-desc")), |ui| {
                 toggle(ui, &mut app.mini.lyrics_autohide, tr!("settings-mini-autohide"));
             });
+            divider(ui);
+            setting_row(ui, tr!("settings-mini-cover-bg"), Some(tr!("settings-mini-cover-bg-desc")), |ui| {
+                toggle(ui, &mut app.mini.cover_bg, tr!("settings-mini-cover-bg"));
+            });
         });
         divider(ui);
         setting_row(ui, tr!("settings-keep-on-top"), Some(tr!("settings-keep-on-top-desc")), |ui| {
