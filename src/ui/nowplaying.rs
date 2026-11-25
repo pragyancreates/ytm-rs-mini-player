@@ -2170,7 +2170,7 @@ fn synced(app: &mut App, ui: &mut Ui, rect: Rect, id: &str, lyrics: &Lyrics, now
         trans.hash(&mut h);
         h.finish()
     };
-    let own = karaoke::Own { scale: app.lyric_prefs.text_scale, weight: app.lyric_prefs.weight, deco_scale: app.lyric_prefs.deco_scale };
+    let own = karaoke::Own { scale: app.lyric_prefs.text_scale, weight: app.lyric_prefs.weight, deco_scale: app.lyric_prefs.deco_scale, size: None, anchor: None, padding: None, ink: None };
     let fullscreen = app.fullscreen;
     let glass_chip = app.look().app.glass.instrumental;
     let quick_scroll = app.quick_lyric_scroll;

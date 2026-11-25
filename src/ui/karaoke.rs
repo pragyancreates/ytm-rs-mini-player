@@ -135,6 +135,8 @@ struct Cfg {
     /// One CSS rem in points.
     rem: f32,
     active: Color32,
+    /// A fixed ink for a compact view, over the theme's sung (and unsung) colours.
+    ink: Option<Color32>,
     /// Alpha of unsung words, before their line's opacity.
     dim_alpha: f32,
     glow: Color32,
@@ -307,6 +309,12 @@ impl Cfg {
             rem *= cap / size;
             size = cap;
         }
+        // A compact view pins its own size, keeping the theme's proportions in rem.
+        if let Some(fixed) = own.size {
+            let fixed = fixed.round().max(1.0);
+            rem *= fixed / size.max(0.001);
+            size = fixed;
+        }
         // The listener's text size goes on top, everything in rem along with it
         // (romanization, translation, spacing), so the theme keeps its proportions.
         // Whole points: every new size fills the font atlas again (it never shrinks),
@@ -314,29 +322,32 @@ impl Cfg {
         let rounded = (size * own.scale).round().max(1.0);
         rem *= rounded / size;
         size = rounded;
+        let padding = match s.line_padding_vh {
+            Some([lo, vh, hi]) => (viewport_h * vh / 100.0).clamp(lo, hi),
+            None => rem * if fullscreen { s.fullscreen_padding_rem.unwrap_or(s.line_padding_rem) } else { s.line_padding_rem },
+        };
         let colour = |c: &str| crate::preset::hex(c);
+        let ink = own.ink;
         Self {
             font: theme::effective_font(&s.font),
             weight: own.weight.unwrap_or(s.weight),
             size,
             deco_scale: own.deco_scale,
             rem,
-            active: theme::with_alpha(crate::preset::paint(&s.sung_color, accent), s.active_alpha),
+            active: ink.unwrap_or_else(|| theme::with_alpha(crate::preset::paint(&s.sung_color, accent), s.active_alpha)),
+            ink,
             dim_alpha: s.dim_alpha,
-            glow: crate::preset::paint(&s.glow_color, accent),
+            glow: ink.unwrap_or_else(|| crate::preset::paint(&s.glow_color, accent)),
             glow_rem: s.glow_rem,
             scale: s.rest_scale,
             active_scale: s.active_scale.max(0.1),
             scale_secs: s.scale_secs.max(0.001) as f64,
             hover_scale: s.hover_scale,
             hover_reveal: s.hover_reveal,
-            padding: match s.line_padding_vh {
-                Some([lo, vh, hi]) => (viewport_h * vh / 100.0).clamp(lo, hi),
-                None => rem * if fullscreen { s.fullscreen_padding_rem.unwrap_or(s.line_padding_rem) } else { s.line_padding_rem },
-            },
+            padding: own.padding.unwrap_or(padding),
             line_height: s.line_height,
             spacing: s.letter_spacing_em * size,
-            target_ratio: s.anchor.clamp(0.1, 0.7),
+            target_ratio: own.anchor.unwrap_or(s.anchor).clamp(0.1, 0.7),
             agent_align: s.agent_align,
             centered,
             fill: s.fill,
@@ -354,15 +365,21 @@ impl Cfg {
             past_lines: if s.past_line_synced.is_empty() { s.past.clone() } else { s.past_line_synced.clone() },
             upcoming_lines: if s.upcoming_line_synced.is_empty() { s.upcoming.clone() } else { s.upcoming_line_synced.clone() },
             past_dim: s.past_dim_alpha,
-            past_color: colour(&s.past_color),
+            past_color: ink.or_else(|| colour(&s.past_color)),
             opacity_t: s.opacity_transition,
             blur_t: s.blur_transition,
             scroll_opacity: s.scroll_opacity,
-            agent_colors: s.agent_colors.iter().map(|c| crate::preset::paint(c, accent)).collect(),
+            agent_colors: match ink {
+                Some(c) => vec![c; s.agent_colors.len()],
+                None => s.agent_colors.iter().map(|c| crate::preset::paint(c, accent)).collect(),
+            },
             dim_from_agent: s.dim_from_agent,
-            band: s.sweep_band.iter().map(|c| crate::preset::paint(c, accent)).collect(),
+            band: match ink {
+                Some(c) => vec![c; s.sweep_band.len()],
+                None => s.sweep_band.iter().map(|c| crate::preset::paint(c, accent)).collect(),
+            },
             band_width: s.sweep_band_width,
-            stroke: (s.stroke_em > 0.0).then(|| (s.stroke_em * size, crate::preset::paint(&s.stroke_color, accent))),
+            stroke: (s.stroke_em > 0.0).then(|| (s.stroke_em * size, ink.unwrap_or_else(|| crate::preset::paint(&s.stroke_color, accent)))),
             bg_em: s.background_em,
             instrumental: s.instrumental,
             aura: s.aura,
@@ -411,11 +428,23 @@ impl Cfg {
             edge_fade: s.edge_fade,
             balance: s.balance,
             exit_fade: s.exit_fade.map_or((FADE_OUT, 0.0), |[secs, delay]| (secs.max(0.01) as f64, delay as f64)),
-            agent_glow: s.agent_glow.iter().map(|c| crate::preset::paint(c, accent)).collect(),
-            aura_colors: s.aura_colors.iter().map(|c| crate::preset::paint(c, accent)).collect(),
-            marker_colors: s.marker_colors.iter().map(|c| crate::preset::paint(c, accent)).collect(),
+            agent_glow: match ink {
+                Some(c) => vec![c; s.agent_glow.len()],
+                None => s.agent_glow.iter().map(|c| crate::preset::paint(c, accent)).collect(),
+            },
+            aura_colors: match ink {
+                Some(c) => vec![c; s.aura_colors.len()],
+                None => s.aura_colors.iter().map(|c| crate::preset::paint(c, accent)).collect(),
+            },
+            marker_colors: match ink {
+                Some(c) => vec![c; s.marker_colors.len()],
+                None => s.marker_colors.iter().map(|c| crate::preset::paint(c, accent)).collect(),
+            },
             active_glow: s.active_glow,
-            active_glow_colors: s.active_glow_colors.iter().map(|c| crate::preset::paint(c, accent)).collect(),
+            active_glow_colors: match ink {
+                Some(c) => vec![c; s.active_glow_colors.len()],
+                None => s.active_glow_colors.iter().map(|c| crate::preset::paint(c, accent)).collect(),
+            },
             hover_glow: s.hover_glow,
             rest_saturate: s.rest_saturate,
             scroll_curve: s.scroll_curve,
@@ -470,6 +499,9 @@ impl Cfg {
     }
     /// The colours a singer's words use: (lit, unsung tint).
     fn agent_color(&self, agent: Option<&str>) -> (Color32, Color32) {
+        if let Some(ink) = self.ink {
+            return (ink, ink);
+        }
         let c = agent.and_then(|a| a.strip_prefix('v')?.parse::<usize>().ok()).and_then(|n| self.agent_colors.get(n.checked_sub(1)?).copied());
         match c {
             Some(c) => (c, if self.dim_from_agent { c } else { Color32::WHITE }),
@@ -1136,6 +1168,11 @@ struct CfgKey {
     accent: Color32,
     /// Panel width, window width and height, text scale, translation size.
     sizes: [u32; 5],
+    /// A fixed text size, anchor and line padding over the theme's, when the view sets them.
+    fixed_size: Option<u32>,
+    anchor: Option<u32>,
+    line_padding: Option<u32>,
+    ink: Option<Color32>,
     weight: Option<Weight>,
     centered: bool,
     fullscreen: bool,
@@ -1178,11 +1215,19 @@ pub struct Own {
     pub weight: Option<Weight>,
     /// Translations' and romanizations' size, a multiple of the theme's.
     pub deco_scale: f32,
+    /// A fixed text size in points in place of the theme's, for a compact view.
+    pub size: Option<f32>,
+    /// A fixed anchor for the line being sung (0.5: the middle), in place of the theme's.
+    pub anchor: Option<f32>,
+    /// A fixed line padding in points in place of the theme's (0: lines packed close).
+    pub padding: Option<f32>,
+    /// A fixed ink for a compact view, over the theme's sung and unsung colours.
+    pub ink: Option<Color32>,
 }
 
 impl Default for Own {
     fn default() -> Self {
-        Self { scale: 1.0, weight: None, deco_scale: 1.0 }
+        Self { scale: 1.0, weight: None, deco_scale: 1.0, size: None, anchor: None, padding: None, ink: None }
     }
 }
 
@@ -1240,6 +1285,10 @@ impl View {
             style: std::ptr::from_ref(f.style) as usize,
             accent: f.accent,
             sizes: [rect.width().to_bits(), viewport.to_bits(), viewport_h.to_bits(), f.own.scale.to_bits(), f.own.deco_scale.to_bits()],
+            fixed_size: f.own.size.map(f32::to_bits),
+            anchor: f.own.anchor.map(f32::to_bits),
+            line_padding: f.own.padding.map(f32::to_bits),
+            ink: f.own.ink,
             weight: f.own.weight,
             centered: f.centered,
             fullscreen: f.fullscreen,
@@ -1260,11 +1309,11 @@ impl View {
         };
         // What a line's own picture depends on. The view's height isn't in it: that only moves
         // the lines, and a new blurred image per line for every step of a resize piled up.
-        let image_key = hash((f.key, rect.width().round() as i32, (cfg.size.to_bits(), cfg.deco_scale.to_bits()), cfg.padding.to_bits(), cfg.max_scale().to_bits(), cfg.centered, &cfg.font, (cfg.weight as u8, cfg.bg_weight as u8), cfg.spacing.to_bits(), cfg.line_height.to_bits(), (cfg.agent_align as u8, cfg.wave.on), theme::fonts_generation()));
+        let image_key = hash((f.key, rect.width().round() as i32, (cfg.size.to_bits(), cfg.deco_scale.to_bits()), (cfg.padding.to_bits(), cfg.max_scale().to_bits(), cfg.centered, cfg.ink.map(|c| c.to_array())), &cfg.font, (cfg.weight as u8, cfg.bg_weight as u8), cfg.spacing.to_bits(), cfg.line_height.to_bits(), (cfg.agent_align as u8, cfg.wave.on), theme::fonts_generation()));
         // The mini card's lyrics area changes height as its chrome slides. In soft mode the
         // view simply centres the line being sung, so the height isn't part of its layout:
         // rebuilding the lines for every step of the slide only made them jitter.
-        let layout_key = hash((image_key, if f.soft { 0 } else { rect.height().round() as i32 }));
+        let layout_key = hash((image_key, if f.soft { 0 } else { rect.height().round() as i32 }, cfg.target_ratio.to_bits()));
         if self.layout.as_ref().is_none_or(|l| l.key != layout_key) {
             self.relayout(ui, &cfg, &f, layout_key, rect);
         }
@@ -1413,9 +1462,9 @@ impl View {
             if credits_focused && let (Some(c), Some(ls)) = (credits, last_sung) {
                 top = (pos(c) + h(c) / 2.0 - offset).min(pos(ls));
             }
-            let top = if f.soft {
-                // The mini card: centre the line being sung even when it is the first or
-                // last one, where the normal view stops at the edge of the lyrics.
+            let top = if f.soft || f.own.anchor.is_some() {
+                // The mini card and the pill: centre the line being sung even when it is
+                // the first or last one, where the normal view stops at the lyrics' edge.
                 centre - offset
             } else {
                 top.clamp(0.0, max_scroll)
