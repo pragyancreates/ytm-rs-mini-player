@@ -154,6 +154,8 @@ struct Cfg {
     agent_align: AgentAlign,
     centered: bool,
     fill: Fill,
+    /// Only the row being sung can light, filling word by word (the pill).
+    active_row: bool,
     wave: LetterWave,
     wobble: bool,
     wobble_secs: f64,
@@ -351,6 +353,7 @@ impl Cfg {
             agent_align: s.agent_align,
             centered,
             fill: s.fill,
+            active_row: own.active_row,
             wave: s.letter_wave,
             wobble: s.wobble,
             wobble_secs: s.wobble_secs.max(0.001) as f64,
@@ -1173,6 +1176,7 @@ struct CfgKey {
     anchor: Option<u32>,
     line_padding: Option<u32>,
     ink: Option<Color32>,
+    active_row: bool,
     weight: Option<Weight>,
     centered: bool,
     fullscreen: bool,
@@ -1226,11 +1230,13 @@ pub struct Own {
     /// Keep the row containing the latest sung word at the anchor, scrolling the line
     /// through a one-line window as it is sung (the pill's compact karaoke).
     pub follow: bool,
+    /// Light only the row being sung, with its words filling as they are sung (the pill).
+    pub active_row: bool,
 }
 
 impl Default for Own {
     fn default() -> Self {
-        Self { scale: 1.0, weight: None, deco_scale: 1.0, size: None, anchor: None, padding: None, ink: None, follow: false }
+        Self { scale: 1.0, weight: None, deco_scale: 1.0, size: None, anchor: None, padding: None, ink: None, follow: false, active_row: false }
     }
 }
 
@@ -1292,6 +1298,7 @@ impl View {
             anchor: f.own.anchor.map(f32::to_bits),
             line_padding: f.own.padding.map(f32::to_bits),
             ink: f.own.ink,
+            active_row: f.own.active_row,
             weight: f.own.weight,
             centered: f.centered,
             fullscreen: f.fullscreen,
@@ -2613,8 +2620,39 @@ fn paint_words(
     // The dim run, then the highlight run over it (`.blyrics-highlight-run`, z-index 1):
     // each word's drop-shadow, then its lit text.
     painter.add(Shape::mesh(base));
+    // In the compact pill only the row being sung may light. Its words still fill in
+    // turn through the normal sweep; the row it leaves fades out instead of cutting.
+    const ROW_FADE: f64 = 0.3;
+    let active_row = if cfg.active_row && key.2 == 0 && lit.exit.is_none() && lit.fill == Fill::Sweep {
+        words
+            .iter()
+            .filter(|w| !w.line_synced && !w.bg && w.start <= lit.t)
+            .max_by(|a, b| a.start.total_cmp(&b.start))
+            .map(|w| w.pos.y)
+    } else {
+        None
+    };
+    let next_start = active_row
+        .map(|row| {
+            words.iter().filter(|w| !w.line_synced && !w.bg && (w.pos.y - row).abs() <= 0.5).map(|w| w.start).fold(f64::INFINITY, f64::min)
+        })
+        .filter(|start| start.is_finite());
     for (wi, (w, (quads, wob))) in words.iter().zip(per_word).enumerate() {
         let look = word_look(w, lit, cfg);
+        let look = if cfg.active_row && key.2 == 0 && lit.exit.is_none() && lit.fill == Fill::Sweep && !w.line_synced {
+            match active_row {
+                Some(row) if (w.pos.y - row).abs() <= 0.5 => look,
+                Some(row) if w.pos.y < row => {
+                    // The row above was active until the next row's first word: fade it down.
+                    let p = next_start.map_or(1.0, |start| ((lit.t - start) / ROW_FADE).clamp(0.0, 1.0)) as f32;
+                    WordLook { opacity: look.opacity * (1.0 - p), ..look }
+                }
+                Some(_) => WordLook { opacity: 0.0, ..look },
+                None => look,
+            }
+        } else {
+            look
+        };
         if look.opacity <= 0.0 || look.end <= 0.0 {
             continue;
         }
