@@ -2639,7 +2639,12 @@ fn paint_words(
         .filter(|start| start.is_finite());
     for (wi, (w, (quads, wob))) in words.iter().zip(per_word).enumerate() {
         let look = word_look(w, lit, cfg);
-        let look = if cfg.active_row && key.2 == 0 && lit.exit.is_none() && lit.fill == Fill::Sweep && !w.line_synced {
+        // The pill's background vocals stay on the dim layer for the line's whole life.
+        // Gating only the sung rows left them briefly lit while their line exited, which
+        // showed up as a flash as the row scrolled up.
+        let look = if cfg.active_row && w.bg {
+            WordLook { opacity: 0.0, ..look }
+        } else if cfg.active_row && key.2 == 0 && lit.exit.is_none() && lit.fill == Fill::Sweep && !w.line_synced {
             match active_row {
                 Some(row) if (w.pos.y - row).abs() <= 0.5 => look,
                 Some(row) if w.pos.y < row => {
