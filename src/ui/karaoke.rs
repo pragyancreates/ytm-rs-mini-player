@@ -275,6 +275,20 @@ impl Cfg {
         self.active_scale.max(self.hover_scale.unwrap_or(1.0)).max(1.0)
     }
 
+    /// The mini card's neighbors: readable, but softly out of focus. The active line is
+    /// untouched, and the theme's own (often heavier) blur is replaced here only.
+    fn soften_neighbors(&mut self) {
+        // [opacity, blur px] by distance from the line being sung: light enough that
+        // words are still there to read.
+        let ladder = vec![[0.86, 1.1], [0.6, 2.0], [0.38, 3.0], [0.22, 4.0]];
+        self.past = ladder.clone();
+        self.upcoming = ladder.clone();
+        self.past_lines = ladder.clone();
+        self.upcoming_lines = ladder;
+        // The mini card's one-line window keeps the active line in the middle.
+        self.target_ratio = 0.5;
+    }
+
     /// `width`: the lyrics panel; `viewport`: the window (the theme's media queries).
     #[allow(clippy::too_many_arguments)]
     fn new(s: &LyricStyle, accent: Color32, width: f32, viewport: f32, viewport_h: f32, centered: bool, own: Own, fullscreen: bool) -> Self {
@@ -1122,6 +1136,7 @@ struct CfgKey {
     weight: Option<Weight>,
     centered: bool,
     fullscreen: bool,
+    soft: bool,
     fonts: u32,
 }
 
@@ -1147,6 +1162,8 @@ pub struct Frame<'a> {
     pub glass_chip: Option<[f32; 3]>,
     /// "Quick line changes": lines scroll the extension's own way, not the theme's.
     pub quick_scroll: bool,
+    /// The mini card's look: neighbor lines are dimmed and softly blurred, still readable.
+    pub soft: bool,
 }
 
 /// Settings › Lyrics over the theme's own look.
@@ -1172,6 +1189,8 @@ pub struct Out {
     pub animating: bool,
     /// The reader scrolled away; a "resume" control can bring the view back.
     pub user_scrolling: bool,
+    /// The line being sung's block height, for a one-line mini viewport.
+    pub active_h: f32,
 }
 
 impl View {
@@ -1221,12 +1240,17 @@ impl View {
             weight: f.own.weight,
             centered: f.centered,
             fullscreen: f.fullscreen,
+            soft: f.soft,
             fonts: theme::fonts_generation(),
         };
         let cfg = match &self.cfg {
             Some((key, font, cfg)) if *key == cfg_key && theme::font_choice_is(font) => cfg.clone(),
             _ => {
-                let cfg = Arc::new(Cfg::new(f.style, f.accent, rect.width(), viewport, viewport_h, f.centered, f.own, f.fullscreen));
+                let mut soft = Cfg::new(f.style, f.accent, rect.width(), viewport, viewport_h, f.centered, f.own, f.fullscreen);
+                if f.soft {
+                    soft.soften_neighbors();
+                }
+                let cfg = Arc::new(soft);
                 self.cfg = Some((cfg_key, theme::font_choice(), cfg.clone()));
                 cfg
             }
@@ -1255,6 +1279,7 @@ impl View {
         // ---- selection and exits (tickView's per-line loop)
         let early = if f.playing { 2.0 } else { 0.0 };
         let mut animating = false;
+        let mut active_h = 0.0;
         for i in 0..lines_n {
             let b = &layout.blocks[i];
             let next = layout.blocks.get(i + 1).filter(|n| n.line.is_some()).map_or(f64::INFINITY, |n| n.start);
@@ -1327,7 +1352,19 @@ impl View {
         }
         let pos = |i: usize| layout.pad_top + layout.blocks[i].top;
         let max_scroll = (layout.content_h - view_h).max(0.0);
-        if !user && (new_lyric || !self.scroll_set) && lines_n > 0 {
+        // The mini card gives the renderer just the line being sung: put it exactly in the
+        // middle, whatever anchor the theme uses for its multi-line view.
+        let single = f.soft && lines_n == 1;
+        if single {
+            let b = &layout.blocks[0];
+            let centre = layout.pad_top + b.top + b.height / 2.0;
+            self.scroll_top = centre - view_h / 2.0;
+            self.scroll_set = true;
+            self.scrolls.clear();
+            self.coast = 0.0;
+            self.user_until = 0.0;
+            self.last_scroll = active.clone();
+        } else if !user && (new_lyric || !self.scroll_set) && lines_n > 0 {
             if active.is_empty() {
                 active.push(0);
             }
@@ -1357,7 +1394,13 @@ impl View {
             if credits_focused && let (Some(c), Some(ls)) = (credits, last_sung) {
                 top = (pos(c) + h(c) / 2.0 - offset).min(pos(ls));
             }
-            let top = top.clamp(0.0, max_scroll);
+            let top = if f.soft {
+                // The mini card: centre the line being sung even when it is the first or
+                // last one, where the normal view stops at the edge of the lyrics.
+                centre - offset
+            } else {
+                top.clamp(0.0, max_scroll)
+            };
             if !self.scroll_set {
                 self.scroll_top = top;
                 self.scroll_set = true;
@@ -1370,10 +1413,10 @@ impl View {
 
         // Reader scrolling.
         let hovered = ui.rect_contains_pointer(rect);
-        let mut wheel = if hovered { ui.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
+        let mut wheel = if hovered && !single { ui.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
         // A finger drags them too, as egui's scroll areas let it, and a flick coasts on.
         // Under the lines, which take only taps: a tap still jumps to its line.
-        if ui.input(|i| i.has_touch_screen()) {
+        if !single && ui.input(|i| i.has_touch_screen()) {
             let drag = ui.interact(rect, ui.scope_id().with("lyr-drag"), egui::Sense::DRAG);
             if drag.dragged() {
                 wheel += ui.input(|i| i.pointer.delta().y);
@@ -1383,7 +1426,7 @@ impl View {
                 self.coast = ui.input(|i| i.pointer.velocity().y).clamp(-6000.0, 6000.0);
             }
         }
-        if self.coast != 0.0 {
+        if !single && self.coast != 0.0 {
             let dt = ui.input(|i| i.stable_dt).min(0.1);
             wheel += self.coast * dt;
             // Slowing to a stop in about a second, like a scroll area's coast.
@@ -1473,6 +1516,9 @@ impl View {
 
             // Whole-line opacity and blur by state, as the themes' `.blyrics--active` rules.
             let on = sung_now;
+            if on {
+                active_h = b.height;
+            }
             let (past_t, up_t) = if richsync { (&cfg.past, &cfg.upcoming) } else { (&cfg.past_lines, &cfg.upcoming_lines) };
             let is_past = match first_active {
                 Some(a) => i < a,
@@ -1798,7 +1844,7 @@ impl View {
         // the lit text they belong to by inserting at the recorded positions.
         self.glow.finish(&ctx, &painter, glow_work, atlas, ppp);
         fade_edges(&ctx, painter.layer_id(), first_shape, rect, cfg.size);
-        Out { seek, animating, user_scrolling: user }
+        Out { seek, animating, user_scrolling: user, active_h }
     }
 
     fn relayout(&mut self, ui: &mut egui::Ui, cfg: &Cfg, f: &Frame, key: u64, rect: Rect) {
@@ -3538,7 +3584,7 @@ mod tests {
             let mut animating = false;
             let mut out = ctx.run_ui(input, |ui| {
                 let n = lyrics.lines.len();
-                let f = Frame { lyrics: &lyrics, key: 1, roman: (0..n).map(|_| None).collect(), trans: vec![None; n], t, playing, now, rect: Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 500.0)), style, accent: Color32::RED, centered: false, own: Own::default(), fullscreen: false, glass_chip: None, quick_scroll: false };
+                let f = Frame { lyrics: &lyrics, key: 1, roman: (0..n).map(|_| None).collect(), trans: vec![None; n], t, playing, now, rect: Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 500.0)), style, accent: Color32::RED, centered: false, own: Own::default(), fullscreen: false, glass_chip: None, quick_scroll: false, soft: false };
                 animating = view.show(ui, f).animating;
             });
             out.textures_delta.clear();
@@ -3584,7 +3630,7 @@ mod tests {
             let mut seek = None;
             let mut out = ctx.run_ui(input, |ui| {
                 let n = lyrics.lines.len();
-                let f = Frame { lyrics: &lyrics, key: 1, roman: (0..n).map(|_| None).collect(), trans: vec![None; n], t: 0.5, playing: false, now, rect: Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 500.0)), style, accent: Color32::RED, centered: false, own: Own::default(), fullscreen: false, glass_chip: None, quick_scroll: false };
+                let f = Frame { lyrics: &lyrics, key: 1, roman: (0..n).map(|_| None).collect(), trans: vec![None; n], t: 0.5, playing: false, now, rect: Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 500.0)), style, accent: Color32::RED, centered: false, own: Own::default(), fullscreen: false, glass_chip: None, quick_scroll: false, soft: false };
                 seek = view.show(ui, f).seek;
             });
             out.textures_delta.clear();
