@@ -471,6 +471,8 @@ pub struct Mini {
     pub lyrics_autohide: bool,
     /// The card shows the song's cover art, dimmed, as its background.
     pub cover_bg: bool,
+    /// The collapsed pill keeps its hover width while lyrics are showing.
+    pub pill_extended: bool,
     /// How blurred the card's cover background is, 0–10 (0: sharp).
     pub cover_blur: f32,
     /// How visible the card's cover background is, in percent.
@@ -550,6 +552,7 @@ impl Mini {
             lyrics: get("mini_lyrics").is_some_and(|v| v == "1"),
             lyrics_autohide: get("mini_lyrics_autohide").is_some_and(|v| v == "1"),
             cover_bg: get("mini_cover_bg").is_some_and(|v| v == "1"),
+            pill_extended: get("mini_pill_extended").is_some_and(|v| v == "1"),
             cover_blur: get("mini_cover_blur").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0).clamp(0.0, 10.0),
             cover_opacity: get("mini_cover_opacity").and_then(|v| v.parse::<f32>().ok()).unwrap_or(100.0).clamp(0.0, 100.0),
             cover_tex: None,
@@ -717,6 +720,7 @@ impl Mini {
         storage.set_string("mini_lyrics", if self.lyrics { "1" } else { "0" }.into());
         storage.set_string("mini_lyrics_autohide", if self.lyrics_autohide { "1" } else { "0" }.into());
         storage.set_string("mini_cover_bg", if self.cover_bg { "1" } else { "0" }.into());
+        storage.set_string("mini_pill_extended", if self.pill_extended { "1" } else { "0" }.into());
         storage.set_string("mini_cover_blur", self.cover_blur.to_string());
         storage.set_string("mini_cover_opacity", self.cover_opacity.to_string());
         let strip_key = if pill_active() { "mini_pill_window" } else { "mini_window" };
@@ -1253,7 +1257,10 @@ pub fn pill(app: &mut App, ui: &mut Ui, now: f64) {
     if app.toast.is_some() {
         ctx.request_repaint_after(Duration::from_millis(500));
     }
-    let open = theme::anim_bool(&ctx, "pill-open", active || toast.is_some(), 0.18);
+    // Lyrics mode can keep the pill at its open width even while the pointer is away; the
+    // controls still only slide out on hover.
+    let extended = app.mini.lyrics && app.mini.pill_extended;
+    let open = theme::anim_bool(&ctx, "pill-open", active || toast.is_some() || extended, 0.18);
     let reveal = theme::anim_bool(&ctx, "pill-buttons", active, 0.18);
     let width = egui::lerp(PILL_REST..=PILL_OPEN, open);
     ctx.data_mut(|d| d.insert_temp(width_id, width));
@@ -1411,7 +1418,9 @@ fn pill_row(app: &mut App, ui: &mut Ui, rect: Rect, reveal: f32, toast: Option<S
     let lyrics_on = app.mini.lyrics && !in_card;
     let lyrics_show = lyrics_on && !active && toast.is_none() && app.mini.pill_lyric_live;
     let lyrics_k = theme::anim_bool(&ctx, "pill-lyrics", lyrics_show, 0.22).clamp(0.0, 1.0);
-    let lyric_area = Rect::from_min_max(pos2(rect.right() - PILL_REST + 57.0, rect.top() + 1.0), pos2(rect.right() - 14.0, rect.bottom() - 1.0));
+    // With the wide lyrics pill the line gets the extended text area even at rest.
+    let lyric_rest = if lyrics_on && app.mini.pill_extended { PILL_OPEN } else { PILL_REST };
+    let lyric_area = Rect::from_min_max(pos2(rect.right() - lyric_rest + 57.0, rect.top() + 1.0), pos2(rect.right() - 14.0, rect.bottom() - 1.0));
     if lyrics_on && toast.is_none() && (lyrics_k > 0.001 || !active) {
         let shifted = lyric_area.translate(vec2(0.0, (1.0 - lyrics_k) * 18.0));
         let mut lyric_ui = ui.new_child(egui::UiBuilder::new().max_rect(lyric_area));
@@ -2287,16 +2296,16 @@ mod tests {
         // The lyrics' auto-hide and cover background are off unless asked for; the
         // background starts sharp and fully visible.
         let m = Mini::load(|_| None);
-        assert!(!m.lyrics_autohide && !m.cover_bg);
+        assert!(!m.lyrics_autohide && !m.cover_bg && !m.pill_extended);
         assert_eq!((m.cover_blur, m.cover_opacity), (0.0, 100.0));
         let m = Mini::load(|k| {
-            (k == "mini_lyrics_autohide" || k == "mini_cover_bg").then(|| "1".to_owned()).or_else(|| match k {
+            (k == "mini_lyrics_autohide" || k == "mini_cover_bg" || k == "mini_pill_extended").then(|| "1".to_owned()).or_else(|| match k {
                 "mini_cover_blur" => Some("6".to_owned()),
                 "mini_cover_opacity" => Some("45".to_owned()),
                 _ => None,
             })
         });
-        assert!(m.lyrics_autohide && m.cover_bg);
+        assert!(m.lyrics_autohide && m.cover_bg && m.pill_extended);
         assert_eq!((m.cover_blur, m.cover_opacity), (6.0, 45.0));
     }
 }

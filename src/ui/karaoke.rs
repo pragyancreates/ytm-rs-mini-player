@@ -1065,8 +1065,6 @@ struct ScrollAnim {
     start: f64,
     delta: f32,
     active: usize,
-    /// A quick nudge to keep the sung row centred, rather than a line change's roll.
-    fast: bool,
 }
 
 /// A line shifted by a relayout (a translation or romanization arriving).
@@ -1430,8 +1428,6 @@ impl View {
         } else {
             active.last().and_then(|&i| sung_y(i).map(|y| (i, (y / line_h) as i32)))
         };
-        // A step to the next row of the same line is a quick nudge; a new line is a roll.
-        let follow_step = f.own.follow && page != self.page && matches!((self.page, page), (Some((a, _)), Some((b, _))) if a == b);
         if page != self.page {
             self.page = page;
             new_lyric |= page.is_some();
@@ -1494,7 +1490,7 @@ impl View {
                 self.scroll_top = top;
                 self.scroll_set = true;
             } else if (top - self.scroll_top).abs() > 2.0 {
-                self.scrolls.push(ScrollAnim { start: f.now, delta: top - self.scroll_top, active: last, fast: follow_step });
+                self.scrolls.push(ScrollAnim { start: f.now, delta: top - self.scroll_top, active: last });
                 self.scroll_top = top;
             }
             self.last_scroll = active.clone();
@@ -1564,15 +1560,10 @@ impl View {
             let mut dy = 0.0;
             for a in &self.scrolls {
                 let rel = i as isize - a.active as isize;
-                let d = if a.fast {
-                    // The pill's next sung row snaps into the middle quickly.
-                    0.16
-                } else {
-                    match cfg.scroll_curve {
-                        _ if f.quick_scroll => scroll_duration(rel, a.delta),
-                        Some(curve) => curve_duration(rel, a.delta, curve),
-                        None => scroll_duration(rel, a.delta) + cfg.scroll_secs - 0.75,
-                    }
+                let d = match cfg.scroll_curve {
+                    _ if f.quick_scroll => scroll_duration(rel, a.delta),
+                    Some(curve) => curve_duration(rel, a.delta, curve),
+                    None => scroll_duration(rel, a.delta) + cfg.scroll_secs - 0.75,
                 };
                 let p = ((f.now - a.start) / d.max(0.01)).clamp(0.0, 1.0) as f32;
                 dy += a.delta * (1.0 - scroll_ease.at(p));

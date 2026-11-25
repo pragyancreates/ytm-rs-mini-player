@@ -2856,6 +2856,10 @@ fn settings_mini(app: &mut App, ui: &mut Ui) {
                 toggle(ui, &mut app.mini.lyrics_autohide, tr!("settings-mini-autohide"));
             });
             divider(ui);
+            setting_row(ui, tr!("settings-mini-pill-extended"), Some(tr!("settings-mini-pill-extended-desc")), |ui| {
+                toggle(ui, &mut app.mini.pill_extended, tr!("settings-mini-pill-extended"));
+            });
+            divider(ui);
             setting_row(ui, tr!("settings-mini-cover-bg"), Some(tr!("settings-mini-cover-bg-desc")), |ui| {
                 toggle(ui, &mut app.mini.cover_bg, tr!("settings-mini-cover-bg"));
             });
