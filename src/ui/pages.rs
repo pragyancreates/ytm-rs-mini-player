@@ -2859,6 +2859,16 @@ fn settings_mini(app: &mut App, ui: &mut Ui) {
             setting_row(ui, tr!("settings-mini-cover-bg"), Some(tr!("settings-mini-cover-bg-desc")), |ui| {
                 toggle(ui, &mut app.mini.cover_bg, tr!("settings-mini-cover-bg"));
             });
+            if app.mini.cover_bg {
+                divider(ui);
+                setting_row_wide(ui, tr!("settings-mini-cover-blur"), None, SLIDER_W, |ui| {
+                    step_slider(ui, &mut app.mini.cover_blur, (0.0, 10.0, 1.0), Some(0.0), |v| format!("{}", v.round() as u32), tr!("settings-mini-cover-blur"));
+                });
+                divider(ui);
+                setting_row_wide(ui, tr!("settings-mini-cover-opacity"), None, SLIDER_W, |ui| {
+                    step_slider(ui, &mut app.mini.cover_opacity, (0.0, 100.0, 1.0), Some(100.0), |v| format!("{}%", v.round() as u32), tr!("settings-mini-cover-opacity"));
+                });
+            }
         });
         divider(ui);
         setting_row(ui, tr!("settings-keep-on-top"), Some(tr!("settings-keep-on-top-desc")), |ui| {

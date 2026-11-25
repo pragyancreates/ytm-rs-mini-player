@@ -471,6 +471,12 @@ pub struct Mini {
     pub lyrics_autohide: bool,
     /// The card shows the song's cover art, dimmed, as its background.
     pub cover_bg: bool,
+    /// How blurred the card's cover background is, 0–10 (0: sharp).
+    pub cover_blur: f32,
+    /// How visible the card's cover background is, in percent.
+    pub cover_opacity: f32,
+    /// The blurred cover texture currently made for the card's background.
+    cover_tex: Option<(u64, egui::TextureHandle)>,
     /// The card's lyrics view, kept apart from Now playing's.
     lyric_view: super::karaoke::View,
     /// The frame key that view was laid out for, so another song starts afresh.
@@ -534,6 +540,9 @@ impl Mini {
             lyrics: get("mini_lyrics").is_some_and(|v| v == "1"),
             lyrics_autohide: get("mini_lyrics_autohide").is_some_and(|v| v == "1"),
             cover_bg: get("mini_cover_bg").is_some_and(|v| v == "1"),
+            cover_blur: get("mini_cover_blur").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0).clamp(0.0, 10.0),
+            cover_opacity: get("mini_cover_opacity").and_then(|v| v.parse::<f32>().ok()).unwrap_or(100.0).clamp(0.0, 100.0),
+            cover_tex: None,
             lyric_view: Default::default(),
             lyric_key: 0,
             lyric_lines: None,
@@ -693,6 +702,8 @@ impl Mini {
         storage.set_string("mini_lyrics", if self.lyrics { "1" } else { "0" }.into());
         storage.set_string("mini_lyrics_autohide", if self.lyrics_autohide { "1" } else { "0" }.into());
         storage.set_string("mini_cover_bg", if self.cover_bg { "1" } else { "0" }.into());
+        storage.set_string("mini_cover_blur", self.cover_blur.to_string());
+        storage.set_string("mini_cover_opacity", self.cover_opacity.to_string());
         let strip_key = if pill_active() { "mini_pill_window" } else { "mini_window" };
         for (key, place) in [(strip_key, &self.place), (VIDEO_KEY, &self.video_place)] {
             if let Some(p) = place {
@@ -1256,18 +1267,57 @@ pub fn pill(app: &mut App, ui: &mut Ui, now: f64) {
     }
     ui.painter().rect_filled(rect, radius, super::shell::base_color(app));
     // The cover, full-bleed under everything the card draws: cropped to fill, dimmed the
-    // theme's way so the normal lyrics and controls keep their colours over it.
-    if app.mini.cover_bg
-        && grow > 0.5
-        && let Some(t) = app.current()
-    {
-        let fade = ((grow - 0.5) * 2.0).clamp(0.0, 1.0);
-        let tint = if theme::light() { Color32::from_gray(224) } else { Color32::from_gray(140) };
-        let mut art = ui.new_child(egui::UiBuilder::new().max_rect(card));
-        art.set_clip_rect(rect.intersect(ui.clip_rect()));
-        widgets::paint_cover_fill(&art, card, &t.thumbs, tint.gamma_multiply(fade));
-        let scrim = if theme::light() { theme::with_alpha(Color32::WHITE, 0.5 * fade) } else { theme::shade(0.3 * fade) };
-        ui.painter().rect_filled(rect, radius, scrim);
+    // theme's way so the normal lyrics and controls keep their colours over it. The blur
+    // index blends the sharp cover with the app's blurred cover art.
+    if app.mini.cover_bg && grow > 0.5 {
+        let (key, image) = match app.cover_colours() {
+            Some(art) => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                art.rgba.hash(&mut h);
+                let key = h.finish();
+                let need = app.mini.cover_tex.as_ref().is_none_or(|(k, _)| *k != key);
+                let image = need.then(|| egui::ColorImage::from_rgba_unmultiplied([crate::art::SIZE as usize, crate::art::SIZE as usize], &art.rgba));
+                (Some(key), image)
+            }
+            None => (None, None),
+        };
+        match (key, image) {
+            (Some(key), Some(image)) => {
+                let tex = ui.ctx().load_texture(format!("mini-cover-blur-{key}"), image, egui::TextureOptions::LINEAR);
+                app.mini.cover_tex = Some((key, tex));
+            }
+            (None, _) => app.mini.cover_tex = None,
+            _ => {}
+        }
+        if let Some(t) = app.current() {
+            let fade = ((grow - 0.5) * 2.0).clamp(0.0, 1.0);
+            let alpha = (app.mini.cover_opacity / 100.0).clamp(0.0, 1.0) * fade;
+            let blur = (app.mini.cover_blur / 10.0).clamp(0.0, 1.0);
+            if alpha > 0.001 {
+                let mut art = ui.new_child(egui::UiBuilder::new().max_rect(card));
+                art.set_clip_rect(rect.intersect(ui.clip_rect()));
+                if let Some((_, tex)) = &app.mini.cover_tex {
+                    // The 64×64 backdrop art, cropped to the card's shape like the cover.
+                    let aspect = card.width() / card.height().max(1.0);
+                    let size = if aspect >= 1.0 { vec2(1.0, 1.0 / aspect) } else { vec2(aspect, 1.0) };
+                    let uv = Rect::from_center_size(pos2(0.5, 0.5), size);
+                    egui::Image::from_texture(tex).uv(uv).tint(Color32::WHITE).paint_at(&art, card);
+                }
+                // The sharp cover over it: at blur 0 it covers the blurred layer whole;
+                // higher indices let more of the blur through.
+                let sharp = if app.mini.cover_tex.is_some() { 1.0 - blur } else { 1.0 };
+                if sharp > 0.001 {
+                    let tint = if theme::light() { Color32::from_gray(224) } else { Color32::from_gray(140) };
+                    widgets::paint_cover_fill(&art, card, &t.thumbs, tint.gamma_multiply(sharp));
+                }
+                let scrim = if theme::light() { theme::with_alpha(Color32::WHITE, 0.5) } else { theme::shade(0.3) };
+                ui.painter().rect_filled(rect, radius, scrim);
+                // Fade the whole backdrop (art and scrim) into the card's own colour, so
+                // the opacity is the share of the art in the final background.
+                ui.painter().rect_filled(rect, radius, super::shell::base_color(app).gamma_multiply(1.0 - alpha));
+            }
+        }
     }
     ui.painter().rect_stroke(rect, radius, egui::Stroke::new(1.0, theme::glass(0.18)), egui::StrokeKind::Inside);
 
@@ -2070,10 +2120,19 @@ mod tests {
         assert_eq!(m.pinned, PINNED_BY_DEFAULT);
         let m = Mini::load(|k| (k == "mini_pinned").then(|| "0".to_owned()));
         assert!(!m.pinned && m.place.is_none() && !m.active());
-        // The lyrics' auto-hide and cover background are off unless asked for.
+        // The lyrics' auto-hide and cover background are off unless asked for; the
+        // background starts sharp and fully visible.
         let m = Mini::load(|_| None);
         assert!(!m.lyrics_autohide && !m.cover_bg);
-        let m = Mini::load(|k| (k == "mini_lyrics_autohide" || k == "mini_cover_bg").then(|| "1".to_owned()));
+        assert_eq!((m.cover_blur, m.cover_opacity), (0.0, 100.0));
+        let m = Mini::load(|k| {
+            (k == "mini_lyrics_autohide" || k == "mini_cover_bg").then(|| "1".to_owned()).or_else(|| match k {
+                "mini_cover_blur" => Some("6".to_owned()),
+                "mini_cover_opacity" => Some("45".to_owned()),
+                _ => None,
+            })
+        });
         assert!(m.lyrics_autohide && m.cover_bg);
+        assert_eq!((m.cover_blur, m.cover_opacity), (6.0, 45.0));
     }
 }
