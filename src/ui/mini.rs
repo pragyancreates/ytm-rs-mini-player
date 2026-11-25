@@ -245,9 +245,10 @@ fn pill_now() -> bool {
 static PILL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// The experimental pill was asked for, instead of the strip. Saved beside the settings:
-/// it's needed before the window opens.
+/// it's needed before the window opens. A fresh profile starts with the pill; saving the
+/// strip turns it off.
 pub fn pill_saved(data_dir: &std::path::Path) -> bool {
-    std::fs::read_to_string(data_dir.join("mini_style")).is_ok_and(|s| s.trim() == "pill")
+    std::fs::read_to_string(data_dir.join("mini_style")).map_or(true, |s| s.trim() == "pill")
 }
 
 pub fn save_pill(data_dir: &std::path::Path, on: bool) -> std::io::Result<()> {
@@ -550,11 +551,11 @@ impl Mini {
             on: false,
             pinned: get("mini_pinned").map_or(PINNED_BY_DEFAULT, |v| v == "1"),
             lyrics: get("mini_lyrics").is_some_and(|v| v == "1"),
-            lyrics_autohide: get("mini_lyrics_autohide").is_some_and(|v| v == "1"),
-            cover_bg: get("mini_cover_bg").is_some_and(|v| v == "1"),
+            lyrics_autohide: get("mini_lyrics_autohide").is_none_or(|v| v == "1"),
+            cover_bg: get("mini_cover_bg").is_none_or(|v| v == "1"),
             pill_extended: get("mini_pill_extended").is_some_and(|v| v == "1"),
-            cover_blur: get("mini_cover_blur").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0).clamp(0.0, 10.0),
-            cover_opacity: get("mini_cover_opacity").and_then(|v| v.parse::<f32>().ok()).unwrap_or(100.0).clamp(0.0, 100.0),
+            cover_blur: get("mini_cover_blur").and_then(|v| v.parse::<f32>().ok()).unwrap_or(3.0).clamp(0.0, 10.0),
+            cover_opacity: get("mini_cover_opacity").and_then(|v| v.parse::<f32>().ok()).unwrap_or(69.0).clamp(0.0, 100.0),
             cover_tex: None,
             pill_lyric_view: Default::default(),
             pill_lyric_key: 0,
@@ -2296,8 +2297,8 @@ mod tests {
         // The lyrics' auto-hide and cover background are off unless asked for; the
         // background starts sharp and fully visible.
         let m = Mini::load(|_| None);
-        assert!(!m.lyrics_autohide && !m.cover_bg && !m.pill_extended);
-        assert_eq!((m.cover_blur, m.cover_opacity), (0.0, 100.0));
+        assert!(m.lyrics_autohide && m.cover_bg && !m.pill_extended);
+        assert_eq!((m.cover_blur, m.cover_opacity), (3.0, 69.0));
         let m = Mini::load(|k| {
             (k == "mini_lyrics_autohide" || k == "mini_cover_bg" || k == "mini_pill_extended").then(|| "1".to_owned()).or_else(|| match k {
                 "mini_cover_blur" => Some("6".to_owned()),
@@ -2307,5 +2308,18 @@ mod tests {
         });
         assert!(m.lyrics_autohide && m.cover_bg && m.pill_extended);
         assert_eq!((m.cover_blur, m.cover_opacity), (6.0, 45.0));
+    }
+
+    #[test]
+    fn a_fresh_profile_uses_the_pill_until_the_strip_is_saved() {
+        let dir = std::env::temp_dir().join(format!("ytm-rs-pill-default-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(pill_saved(&dir));
+        save_pill(&dir, false).unwrap();
+        assert!(!pill_saved(&dir));
+        save_pill(&dir, true).unwrap();
+        assert!(pill_saved(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
