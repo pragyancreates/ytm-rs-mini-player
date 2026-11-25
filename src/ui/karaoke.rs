@@ -1097,6 +1097,9 @@ pub struct View {
     states: Vec<LineState>,
     scroll_top: f32,
     scroll_set: bool,
+    /// The mini card's height last frame: its chrome slides, so the view's height changes
+    /// under the line being sung and the scroll follows it by half of each change.
+    soft_h: f32,
     scrolls: Vec<ScrollAnim>,
     shifts: Vec<Vec<Shift>>,
     last_scroll: Vec<usize>,
@@ -1258,7 +1261,10 @@ impl View {
         // What a line's own picture depends on. The view's height isn't in it: that only moves
         // the lines, and a new blurred image per line for every step of a resize piled up.
         let image_key = hash((f.key, rect.width().round() as i32, (cfg.size.to_bits(), cfg.deco_scale.to_bits()), cfg.padding.to_bits(), cfg.max_scale().to_bits(), cfg.centered, &cfg.font, (cfg.weight as u8, cfg.bg_weight as u8), cfg.spacing.to_bits(), cfg.line_height.to_bits(), (cfg.agent_align as u8, cfg.wave.on), theme::fonts_generation()));
-        let layout_key = hash((image_key, rect.height().round() as i32));
+        // The mini card's lyrics area changes height as its chrome slides. In soft mode the
+        // view simply centres the line being sung, so the height isn't part of its layout:
+        // rebuilding the lines for every step of the slide only made them jitter.
+        let layout_key = hash((image_key, if f.soft { 0 } else { rect.height().round() as i32 }));
         if self.layout.as_ref().is_none_or(|l| l.key != layout_key) {
             self.relayout(ui, &cfg, &f, layout_key, rect);
         }
@@ -1305,6 +1311,19 @@ impl View {
 
         // ---- scrolling
         let view_h = rect.height();
+        if f.soft {
+            // The line being sung stays at the centre of the view: a height change moves
+            // that centre by half of it, so the scroll moves by the same half.
+            if self.scroll_set && self.soft_h > 0.0 {
+                let d = view_h - self.soft_h;
+                if d.abs() > 0.01 {
+                    self.scroll_top -= d * 0.5;
+                }
+            }
+            self.soft_h = view_h;
+        } else {
+            self.soft_h = 0.0;
+        }
         let scroll_time = t + cfg.scroll_offset;
         let user = f.now < self.user_until;
         let mut active: Vec<usize> = Vec::new();
